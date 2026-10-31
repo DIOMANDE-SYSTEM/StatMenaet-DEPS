@@ -1,0 +1,64 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+
+    function isAdmin() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'super_admin'
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.active == true;
+    }
+
+    // Marqueur « plateforme initialisée » : créé une seule fois, avec le premier super administrateur
+    match /config/init {
+      allow read: if true;
+      allow create: if signedIn() && !exists(/databases/$(database)/documents/config/init);
+    }
+
+    match /users/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || isAdmin());
+      allow create: if isAdmin()
+        || (request.auth.uid == uid
+            && request.resource.data.role == 'super_admin'
+            && !exists(/databases/$(database)/documents/config/init)
+            && existsAfter(/databases/$(database)/documents/config/init));
+      // Un utilisateur ne peut modifier que « must » et « last » sur son propre profil
+      allow update: if isAdmin()
+        || (request.auth.uid == uid
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['must', 'last']));
+      allow delete: if isAdmin();
+    }
+
+    // Journal d'audit : tout utilisateur connecté écrit, seul le super administrateur lit
+    match /audit/{id} {
+      allow create: if signedIn();
+      allow read: if isAdmin();
+    }
+
+    // Annonces et publicités : visibles par tous, modifiables par le super administrateur
+    match /ads/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+    match /settings/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // Formulaires partagés par lien : lisibles par tous, gérés par le super administrateur
+    match /forms/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+    // Réponses : n'importe qui peut en déposer (formulaire ouvert), seul le super administrateur les lit et les traite
+    match /submissions/{id} {
+      allow create: if request.resource.data.keys().hasOnly(['formId','formTitle','ref','at','status','data','labels'])
+        && request.resource.data.status == 'recu'
+        && exists(/databases/$(database)/documents/forms/$(request.resource.data.formId))
+        && get(/databases/$(database)/documents/forms/$(request.resource.data.formId)).data.active == true;
+      allow read, update, delete: if isAdmin();
+    }
+  }
+}
